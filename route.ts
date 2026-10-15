@@ -1,124 +1,80 @@
 
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { getIronSession } from "iron-session";
+import bcrypt from "bcryptjs";
 import pool from "@/lib/db";
-import { calculateReceipt } from "@/lib/receipt-calculation";
+import {
+  sessionOptions,
+  type SessionData,
+} from "@/lib/session";
 
 export async function POST(request: Request) {
-  const client = await pool.connect();
-  let transactionStarted = false;
-
   try {
     const body = await request.json();
-    const guestId = Number(body.guest_id);
-    const receiptNo = String(body.receipt_no ?? "");
-    const services = body.services;
 
-    if (
-      !Number.isSafeInteger(guestId) ||
-      guestId <= 0 ||
-      !/^[1-9]\d*$/.test(receiptNo) ||
-      !Array.isArray(services)
-    ) {
+    const user_name =
+      typeof body.user_name === "string"
+        ? body.user_name.trim()
+        : "";
+
+    const password =
+      typeof body.password === "string"
+        ? body.password
+        : "";
+
+    if (!user_name || !password) {
       return NextResponse.json(
-        { message: "Invalid checkout information." },
+        { message: "Username and password are required." },
         { status: 400 }
       );
     }
 
-    await client.query("BEGIN");
-    transactionStarted = true;
-
-    // Serialize checkout attempts for this guest.
-    const guestLock = await client.query(
-      `SELECT guest_id
-       FROM public.guest_details
-       WHERE guest_id = $1
-       FOR UPDATE`,
-      [guestId]
+    const result = await pool.query(
+      `SELECT user_name, password
+       FROM public.admin
+       WHERE user_name = $1`,
+      [user_name]
     );
 
-    if (guestLock.rows.length === 0) {
-      throw new Error("Guest ID was not found.");
-    }
-
-    // Lock this guest's current room assignments.
-    const roomLock = await client.query(
-      `SELECT room_number
-       FROM public.rooms
-       WHERE guest_id = $1
-       FOR UPDATE`,
-      [guestId]
-    );
-
-    if (roomLock.rows.length === 0) {
-      throw new Error(
-        "No active room assignments remain. This guest may already have checked out."
+    if (result.rows.length === 0) {
+      return NextResponse.json(
+        { message: "Invalid username or password." },
+        { status: 401 }
       );
     }
 
-    // Always recalculate on the server.
-    const receipt = await calculateReceipt(
-      client,
-      guestId,
-      services
+    const user = result.rows[0];
+
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user.password
     );
 
-    // Insert the receipt number previewed on the receipt page.
-    // OVERRIDING SYSTEM VALUE allows this explicit identity value.
-    await client.query(
-      `INSERT INTO public.income
-         (receipt_no, income_date, amount)
-       OVERRIDING SYSTEM VALUE
-       VALUES ($1, CURRENT_DATE, $2)`,
-      [receiptNo, receipt.total]
+    if (!passwordMatches) {
+      return NextResponse.json(
+        { message: "Invalid username or password." },
+        { status: 401 }
+      );
+    }
+
+    const session = await getIronSession<SessionData>(
+      await cookies(),
+      sessionOptions
     );
 
-    // Release all rooms assigned to this guest.
-    await client.query(
-      `DELETE FROM public.rooms WHERE guest_id = $1`,
-      [guestId]
-    );
-
-    await client.query("COMMIT");
-    transactionStarted = false;
+    session.userName = user.user_name;
+    await session.save();
 
     return NextResponse.json({
-      message: "Checkout completed successfully.",
-      receiptNo,
-      total: receipt.total,
+      message: "Login successful.",
     });
-  } catch (error: unknown) {
-    if (transactionStarted) {
-      await client.query("ROLLBACK");
-    }
-
-    const dbError = error as { code?: string };
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Checkout failed.";
-
-    console.error("Checkout failed:", error);
-
-    if (dbError.code === "23505") {
-      return NextResponse.json(
-        { message: "This receipt number has already been used." },
-        { status: 409 }
-      );
-    }
-
-    const clientError =
-      message.includes("not found") ||
-      message.includes("Invalid") ||
-      message.includes("must be later") ||
-      message.includes("No active") ||
-      message.includes("missing from the charges");
+  } catch (error) {
+    console.error("Login failed:", error);
 
     return NextResponse.json(
-      { message },
-      { status: clientError ? 400 : 500 }
+      { message: "Unable to log in. Please try again." },
+      { status: 500 }
     );
-  } finally {
-    client.release();
   }
 }
