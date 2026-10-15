@@ -1,1 +1,329 @@
-# Hotel_Management_Web_App
+# Hotel Management System
+
+A full-stack hotel management application built with **Next.js App Router, TypeScript, PostgreSQL, React, `pg`, `bcryptjs`, and `iron-session`**.
+
+The application supports administrator registration and login, room reservations, guest checkout, receipt previews, and monthly income reporting.
+
+## Features
+
+- Admin registration with bcrypt password hashing.
+- Admin login with session-based authentication.
+- Logout and protected dashboard page.
+- Reservation of one or more rooms for a guest.
+- Room availability display for rooms numbered 1–10.
+- Server-side receipt calculation using the `charges` table.
+- Transactional checkout that records income and releases room assignments.
+- Monthly income report grouped by calendar month.
+- Parameterized PostgreSQL queries and server-side input validation.
+
+## Technology stack
+
+| Area | Technology |
+|---|---|
+| Full-stack framework | Next.js App Router |
+| Language | TypeScript |
+| UI | React |
+| Database | PostgreSQL |
+| Database client | `pg` connection pool |
+| Password hashing | `bcryptjs` |
+| Session management | `iron-session` |
+| Styling | CSS |
+
+## Main application routes
+
+The exact folder names should match the project. These are the routes implied by the provided code.
+
+| Route | Purpose |
+|---|---|
+| `/` | Admin login |
+| `/register` | Register an admin account |
+| `/dashboard` | Hotel management dashboard |
+| `/room-reservation` | Reserve rooms and save guest details |
+| `/checkout` | Enter a guest ID and choose additional services |
+| `/receipt` | Preview the receipt and complete checkout |
+| `/monthly-income` | View monthly income totals |
+
+### API endpoints
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/register` | `POST` | Validate and create an admin account |
+| `/api/login` | `POST` | Verify credentials and create a session |
+| `/api/logout` | `POST` | Destroy the session |
+| `/api/room-reservation` | `GET` | Return occupied room numbers |
+| `/api/room-reservation` | `POST` | Save guest details and room assignments |
+| `/api/receipt` | `GET` | Calculate receipt preview and allocate a sequence number |
+| `/api/checkout` | `POST` | Recalculate charges, record income, and release rooms |
+
+## Getting started
+
+### Prerequisites
+
+- A supported Node.js version for the installed Next.js release.
+- PostgreSQL running locally or on a database server.
+- npm (or another package manager compatible with your project).
+
+### 1. Install dependencies
+
+From the project directory, run:
+
+```bash
+npm install
+```
+
+If these packages are not already listed in `package.json`, install the dependencies used by the supplied code:
+
+```bash
+npm install pg bcryptjs iron-session
+npm install -D @types/pg
+```
+
+### 2. Configure environment variables
+
+Create a `.env.local` file in the project root:
+
+```env
+DATABASE_URL=postgresql://YOUR_DB_USER:YOUR_DB_PASSWORD@localhost:5432/YOUR_DB_NAME
+SESSION_PASSWORD=REPLACE_WITH_A_RANDOM_SECRET_AT_LEAST_32_CHARACTERS_LONG
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+Replace the database user, password, and database name with your own PostgreSQL settings. Keep `.env.local` out of source control. Do not commit real secrets.
+
+Generate a strong session secret locally if needed, for example with Node.js:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+The `SESSION_PASSWORD` value must be at least 32 characters long. Use a secure production secret in deployment.
+
+### 3. Create the database schema
+
+The code references the following tables in the PostgreSQL `public` schema:
+
+- `admin`
+- `guest_details`
+- `rooms`
+- `charges`
+- `income`
+
+The following is an **illustrative starting schema inferred from the supplied code**, not a verified copy of the database currently installed in your environment. Review data types and constraints before running it, especially if you already have tables or data.
+
+```sql
+CREATE TABLE IF NOT EXISTS public.admin (
+    user_name VARCHAR(50) PRIMARY KEY,
+    password VARCHAR(60) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.guest_details (
+    guest_id INTEGER PRIMARY KEY,
+    name VARCHAR(150) NOT NULL,
+    contact_number VARCHAR(20) NOT NULL,
+    address TEXT NOT NULL,
+    check_in_date DATE NOT NULL,
+    check_in_time TIME NOT NULL,
+    checkout_date DATE NOT NULL,
+    checkout_time TIME NOT NULL,
+    CHECK (
+      checkout_date > check_in_date
+      OR (
+        checkout_date = check_in_date
+        AND checkout_time > check_in_time
+      )
+    )
+);
+
+CREATE TABLE IF NOT EXISTS public.rooms (
+    guest_id INTEGER NOT NULL
+        REFERENCES public.guest_details(guest_id),
+    room_number INTEGER NOT NULL UNIQUE,
+    CHECK (room_number BETWEEN 1 AND 10)
+);
+
+CREATE TABLE IF NOT EXISTS public.charges (
+    service VARCHAR(100) PRIMARY KEY,
+    charges NUMERIC(12, 2) NOT NULL CHECK (charges >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.income (
+    receipt_no INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    income_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    amount NUMERIC(12, 2) NOT NULL CHECK (amount >= 0)
+);
+```
+
+The code expects the `charges` table to include at least the `Room` charge and the following optional service names:
+
+```sql
+INSERT INTO public.charges (service, charges)
+VALUES
+    ('Room', 5000.00),
+    ('Gym', 500.00),
+    ('Laundry', 300.00),
+    ('Extra beverages', 250.00)
+ON CONFLICT (service) DO NOTHING;
+```
+
+These amounts are examples only. Replace them with the hotel's actual prices.
+
+**Schema notes:**
+
+- `admin.password` stores the bcrypt hash, not the original password.
+- The `rooms` table is an active-assignment table in this design. Checkout deletes its rows, making rooms available again.
+- `income` has no guest ID or receipt-to-guest foreign key in the supplied code. Consequently, the database cannot directly identify which guest generated a particular income row.
+- The sample `income.receipt_no` uses an integer identity column. If your actual `receipt_no` is `BIGINT` or another type, adjust the schema and TypeScript expectations consistently.
+- The `OVERRIDING SYSTEM VALUE` clause in the checkout insert is appropriate for a `GENERATED ALWAYS AS IDENTITY` column. The illustrative schema above uses `GENERATED BY DEFAULT`, for which that clause is unnecessary but accepted by PostgreSQL. Choose one identity strategy consistently with your real schema.
+- `CREATE TABLE IF NOT EXISTS` does not update an existing table's structure.
+
+### 4. Run the development server
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:3000`.
+
+Ensure the project includes the route-handler files, page files, `lib/db.ts`, `lib/session.ts`, and `lib/receipt-calculation.ts` corresponding to the supplied code.
+
+## Database ER diagram
+
+The diagram below represents the entities and relationships implied by the code. It includes the important one-to-many relationship between a guest and their room-assignment rows. `income` and `charges` are not directly related to other entities in the current implementation.
+
+```mermaid
+erDiagram
+    GUEST_DETAILS ||--o{ ROOMS : "has active assignments"
+
+    GUEST_DETAILS {
+        int guest_id PK
+        varchar name
+        varchar contact_number
+        text address
+        date check_in_date
+        time check_in_time
+        date checkout_date
+        time checkout_time
+    }
+
+    ROOMS {
+        int guest_id FK
+        int room_number UK
+    }
+
+    ADMIN {
+        varchar user_name PK
+        varchar password "bcrypt hash"
+    }
+
+    CHARGES {
+        varchar service PK
+        numeric charges
+    }
+
+    INCOME {
+        int receipt_no PK
+        date income_date
+        numeric amount
+    }
+```
+
+### Entity descriptions
+
+| Entity | Purpose |
+|---|---|
+| `admin` | Stores administrator usernames and password hashes. |
+| `guest_details` | Stores each guest's identity and reservation dates/times. |
+| `rooms` | Stores active room assignments. A guest may have multiple room rows. |
+| `charges` | Stores the prices used to calculate room and additional-service charges. |
+| `income` | Stores the receipt number, income date, and total amount recorded at checkout. |
+
+### Relationship and design limitations
+
+- **`guest_details` → `rooms`:** one guest can have zero or more active room assignments. Each room assignment references one guest. A `UNIQUE` constraint on `rooms.room_number` prevents a room from being assigned to multiple guests simultaneously.
+- **`charges` → receipt calculation:** the code reads prices from this table, but it does not save individual service usage or receipt line items.
+- **`income` → guest:** no direct relationship is represented because the checkout code does not insert a `guest_id` into `income`.
+- **Historical reservations:** deleting room rows at checkout means the `rooms` table alone does not preserve a history of previous assignments.
+
+For a more auditable production design, consider adding a `reservations` or `room_assignments` history table, a `receipt_items` table, and a guest or reservation reference in `income`. That would allow historical receipts and charges to be reconstructed even after checkout.
+
+## Important technical decisions
+
+### 1. One full-stack Next.js application
+
+The React pages and backend route handlers are kept in one application. This simplifies deployment and lets the server query PostgreSQL directly without exposing database credentials to the browser.
+
+### 2. Password hashing and session cookies
+
+Passwords are hashed with bcrypt using a work factor of 12. Login verifies the hash and saves the username in an `iron-session` session. The session secret is kept in an environment variable rather than source code.
+
+### 3. Parameterized SQL and backend validation
+
+Database inputs are passed as query parameters, such as `$1`, rather than interpolated into SQL strings. The API validates values again on the server because browser validation can be bypassed.
+
+### 4. Database transactions for multi-step operations
+
+Reservation saves guest details and room assignments in one transaction. Checkout records income and removes active room assignments in one transaction. A failure should roll back the operation rather than leave a partial result.
+
+### 5. Server-side receipt calculations
+
+The server loads rates from `charges` and calculates the total. It does not trust a total submitted by the browser. The preview receipt number comes from a PostgreSQL sequence, so gaps in receipt numbers are possible.
+
+### 6. Temporary service selections
+
+Services are selected on the checkout page and passed through the URL to the receipt page. They are validated and priced on the server but are not stored as a historical record of services consumed.
+
+### 7. Active room assignments
+
+The `rooms` table represents current occupancy, and checkout deletes the guest's room rows. This is simple for availability tracking but does not preserve room history.
+
+## Security and reliability checklist
+
+Before deploying, verify the following:
+
+- [ ] Check the administrator session in every protected API endpoint, not only in the dashboard page.
+- [ ] Handle duplicate usernames with a unique database constraint and return HTTP `409 Conflict`.
+- [ ] Ensure the database schema contains the intended foreign keys, unique constraints, and check constraints.
+- [ ] Restrict access to registration if public admin registration is not intended.
+- [ ] Validate that receipt numbers are valid and unused; rely on the database's primary key or unique constraint to prevent duplicates.
+- [ ] Confirm that checkout always rolls back on failure and releases the database client.
+- [ ] Consider idempotency or a persisted checkout status to prevent duplicate processing on retries.
+- [ ] Preserve historical reservation and receipt details if the business requires audit records.
+- [ ] Use HTTPS and secure environment variables in production.
+- [ ] Avoid returning raw database errors to clients; log detailed errors server-side and return safe messages.
+
+## Troubleshooting
+
+### `relation "admin" does not exist`
+
+PostgreSQL cannot find `public.admin` in the database connection used by the application. Confirm that:
+
+1. `DATABASE_URL` points to the intended database.
+2. Created the table in that database.
+3. The table is named `admin` and is in the `public` schema.
+4. Restarted the development server after changing environment variables.
+
+Check from `psql`:
+
+```sql
+SELECT current_database(), current_schema();
+SELECT to_regclass('public.admin');
+```
+
+If the second query returns `NULL`, PostgreSQL cannot find that table in the connected database.
+
+### Receipt calculation reports a missing charge
+
+Check that `public.charges` has rows for `Room` and each selected service, with names matching the strings used by the application.
+
+### A room is already assigned
+
+Refresh room availability and verify that the database has a unique constraint on `rooms.room_number`. Frontend disabling alone is not sufficient to prevent simultaneous booking conflicts.
+
+## Suggested future improvements
+
+- Persist reservations and room assignment history.
+- Persist receipt headers and receipt line items.
+- Associate each receipt with its guest or reservation.
+- Add role-based access if more than one type of user is introduced.
+- Add tests for authentication, invalid input, duplicate reservations, transaction rollback, and checkout retries.
+- Add database migrations to version and safely update the schema.
